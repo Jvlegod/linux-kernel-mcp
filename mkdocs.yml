@@ -1,0 +1,40 @@
+site_name: linux-kernel-mcp
+site_description: MCP server for Linux kernel docs, source lookup, and driver scaffold planning
+site_url: https://example.invalid/linux-kernel-mcp
+repo_name: jvle/linux-kernel-mcp
+repo_url: https://github.com/jvlegod/linux-kernel-mcp
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            heading_level: 2
+            inherited_members: false
+            merge_init_into_class: true
+            separate_signature: true
+            show_root_heading: true
+            show_source: false
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+nav:
+  - Overview: index.md
+  - API Guide: api.md
+  - Reference:
+      - Server: reference/server.md
+      - Models: reference/models.md
+      - Templates: reference/templates.md
