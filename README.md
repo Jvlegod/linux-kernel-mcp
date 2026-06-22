@@ -108,6 +108,8 @@ Local source-tree tools:
 - `search_local_kernel_code`
 - `read_local_kernel_file`
 - `search_local_kernel_api`
+- `inspect_kernel_capabilities`
+- `find_driver_examples`
 
 Driver-planning tools:
 
@@ -120,8 +122,9 @@ Driver-planning tools:
 1. Search the latest official docs for the subsystem or API.
 2. Fetch upstream source snippets when the latest implementation matters.
 3. Configure a local kernel tree only if you need version-specific local code.
-4. Search nearby local examples and API call sites.
-5. Ask Codex to plan the implementation and call out version-sensitive checks.
+4. Inspect local kernel capabilities before choosing helper APIs or callback signatures.
+5. Search nearby local examples and API call sites.
+6. Ask Codex to plan the implementation and call out version-sensitive checks.
 
 ## Codex Configuration
 

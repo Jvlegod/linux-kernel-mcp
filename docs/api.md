@@ -16,6 +16,8 @@ Lookup and environment tools:
 - `search_local_kernel_code`
 - `read_local_kernel_file`
 - `search_local_kernel_api`
+- `inspect_kernel_capabilities`
+- `find_driver_examples`
 - `search_online_kernel_code`
 - `fetch_upstream_kernel_file`
 - `plan_kernel_implementation`
@@ -270,6 +272,51 @@ Returns:
 Use this tool when you want declarations, definitions, and nearby call sites
 without manually crafting multiple grep patterns. If no local tree is set, use
 remote docs or upstream source tools first.
+
+### `inspect_kernel_capabilities`
+
+Inspects a configured local kernel tree and reports version-sensitive driver
+capabilities.
+
+Arguments:
+
+- `root`: optional one-call root override
+
+Returns:
+
+- `root`
+- `kernel_version`: Makefile version fields and configured kernel release when available
+- `config_files`: common generated config file presence
+- `helpers`: availability and first match location for common driver helper APIs
+- `callback_signatures`: local `probe` / `remove` callback field signatures for common bus drivers
+- `notes`
+
+Use this before generating driver code for an older BSP. It helps Codex avoid
+emitting helpers or callback prototypes that do not exist in the target tree.
+
+### `find_driver_examples`
+
+Finds similar in-tree drivers for a subsystem and optional keyword set.
+
+Arguments:
+
+- `subsystem`: one of `platform`, `i2c`, `spi`, `gpio`, `pwm`, `input`, `leds`, `watchdog`, `iio`, or `misc`
+- `keywords`: optional list of vendor names, compatible fragments, IP block names, or helper APIs
+- `root`: optional one-call root override
+- `limit`: maximum number of examples, defaults to `5`
+
+Returns:
+
+- `root`
+- `subsystem`
+- `keywords`
+- `count`
+- `examples`: ranked files with scores, matched helpers, matched keywords, and useful lines
+- `notes`
+
+Use this after selecting a subsystem and before writing a new driver. Prefer the
+highest-scoring examples from the same BSP when they conflict with newer
+mainline style.
 
 ## Online source-browsing tools
 

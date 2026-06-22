@@ -103,7 +103,7 @@ def _run_rg(pattern: str, root: Path, glob: str | None = None, limit: int = 20) 
     if not root.exists():
         return {"error": f"Local kernel tree not found: {root}"}
 
-    cmd = ["rg", "-n", "--no-heading", "--color", "never", "-m", str(limit), pattern, str(root)]
+    cmd = ["rg", "-n", "--column", "--no-heading", "--color", "never", "-m", str(limit), pattern, str(root)]
     if glob:
         cmd[1:1] = ["-g", glob]
 
@@ -143,6 +143,178 @@ def _read_local_file(path: Path, start_line: int = 1, max_lines: int = 80) -> di
     end = min(len(lines), start + max_lines - 1)
     snippet = [LineSnippet(line=idx, text=lines[idx - 1]) for idx in range(start, end + 1)]
     return {"path": str(path), "start_line": start, "end_line": end, "snippet": _serialize_lines(snippet)}
+
+
+def _path_for_response(path: Path, root: Path) -> str:
+    """Return a root-relative path when possible."""
+
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _read_kernel_makefile_version(root: Path) -> dict[str, Any]:
+    """Extract VERSION/PATCHLEVEL/SUBLEVEL/EXTRAVERSION from the kernel Makefile."""
+
+    makefile = root / "Makefile"
+    if not makefile.exists():
+        return {"error": f"Kernel Makefile not found: {makefile}"}
+
+    values: dict[str, str] = {}
+    for line in makefile.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.match(r"^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)\s*=\s*(.*)$", line)
+        if match:
+            values[match.group(1).lower()] = match.group(2).strip()
+
+    version = values.get("version")
+    patchlevel = values.get("patchlevel")
+    sublevel = values.get("sublevel")
+    extraversion = values.get("extraversion", "")
+    release = root / "include" / "config" / "kernel.release"
+    local_release = None
+    if release.exists():
+        local_release = release.read_text(encoding="utf-8", errors="replace").strip()
+
+    parsed = ".".join(part for part in [version, patchlevel, sublevel] if part is not None)
+    if extraversion:
+        parsed = f"{parsed}{extraversion}"
+
+    return {
+        "version": version,
+        "patchlevel": patchlevel,
+        "sublevel": sublevel,
+        "extraversion": extraversion,
+        "makefile_release": parsed or None,
+        "configured_release": local_release,
+    }
+
+
+def _rg_matches(pattern: str, root: Path, glob: str | None = None, limit: int = 20) -> list[SearchMatch]:
+    """Return normalized ripgrep matches, raising no exception on no-match."""
+
+    result = _run_rg(pattern=pattern, root=root, glob=glob, limit=limit)
+    return [SearchMatch(**match) for match in result.get("matches", [])]
+
+
+def _first_match(pattern: str, root: Path, glob: str | None = None) -> SearchMatch | None:
+    """Return the first ripgrep match for a pattern."""
+
+    matches = _rg_matches(pattern=pattern, root=root, glob=glob, limit=1)
+    return matches[0] if matches else None
+
+
+def _api_presence(root: Path, name: str) -> dict[str, Any]:
+    """Detect whether a symbol exists in the selected kernel tree."""
+
+    match = _first_match(rf"\b{re.escape(name)}\b", root=root, glob="*.{c,h}")
+    if match is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "file": _path_for_response(Path(match.file), root),
+        "line": match.line,
+        "text": match.text,
+    }
+
+
+def _struct_callback_signature(root: Path, struct_name: str, callback: str) -> dict[str, Any]:
+    """Find a callback field inside a kernel struct declaration."""
+
+    struct_match = _first_match(rf"struct\s+{re.escape(struct_name)}\s*\{{", root=root, glob="include/linux/*.h")
+    if struct_match is None:
+        struct_match = _first_match(rf"struct\s+{re.escape(struct_name)}\s*\{{", root=root, glob="**/*.h")
+    if struct_match is None:
+        return {"available": False, "note": f"struct {struct_name} not found"}
+
+    header_path = Path(struct_match.file)
+    lines = header_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(0, struct_match.line - 1)
+    for idx in range(start, min(len(lines), start + 220)):
+        line = lines[idx].strip()
+        if re.search(rf"\(\*{re.escape(callback)}\)\s*\(", line):
+            return {
+                "available": True,
+                "file": _path_for_response(header_path, root),
+                "line": idx + 1,
+                "signature": line,
+                "returns_int": line.startswith("int "),
+                "returns_void": line.startswith("void "),
+            }
+        if idx > start and line.startswith("};"):
+            break
+    return {
+        "available": False,
+        "file": _path_for_response(header_path, root),
+        "note": f"{callback} callback not found in struct {struct_name}",
+    }
+
+
+def _rg_file_list(patterns: list[str], root: Path, glob: str, limit: int = 200) -> set[Path]:
+    """Return files matching any pattern."""
+
+    files: set[Path] = set()
+    for pattern in patterns:
+        cmd = ["rg", "-l", "--color", "never", "-g", glob, pattern, "."]
+        try:
+            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            return files
+        if proc.returncode not in (0, 1):
+            continue
+        for line in proc.stdout.splitlines():
+            files.add((root / line).resolve())
+            if len(files) >= limit:
+                return files
+    return files
+
+
+def _driver_example_search_profile(subsystem: str) -> dict[str, Any] | None:
+    """Return directory and registration-helper hints for a driver subsystem."""
+
+    profiles: dict[str, dict[str, Any]] = {
+        "platform": {
+            "globs": ["drivers/**/*.c"],
+            "helpers": ["module_platform_driver", "platform_driver_register", "struct platform_driver"],
+        },
+        "i2c": {
+            "globs": ["drivers/**/*.c"],
+            "helpers": ["module_i2c_driver", "i2c_add_driver", "struct i2c_driver"],
+        },
+        "spi": {
+            "globs": ["drivers/**/*.c"],
+            "helpers": ["module_spi_driver", "spi_register_driver", "struct spi_driver"],
+        },
+        "gpio": {
+            "globs": ["drivers/gpio/**/*.c", "drivers/**/*.c"],
+            "helpers": ["struct gpio_chip", "devm_gpiochip_add_data", "gpiochip_add_data"],
+        },
+        "pwm": {
+            "globs": ["drivers/pwm/**/*.c", "drivers/**/*.c"],
+            "helpers": ["struct pwm_chip", "pwmchip_add", "devm_pwmchip_add"],
+        },
+        "input": {
+            "globs": ["drivers/input/**/*.c", "drivers/**/*.c"],
+            "helpers": ["input_register_device", "devm_input_allocate_device"],
+        },
+        "leds": {
+            "globs": ["drivers/leds/**/*.c", "drivers/**/*.c"],
+            "helpers": ["led_classdev_register", "devm_led_classdev_register"],
+        },
+        "watchdog": {
+            "globs": ["drivers/watchdog/**/*.c", "drivers/**/*.c"],
+            "helpers": ["watchdog_register_device", "devm_watchdog_register_device"],
+        },
+        "iio": {
+            "globs": ["drivers/iio/**/*.c", "drivers/**/*.c"],
+            "helpers": ["iio_device_register", "devm_iio_device_register"],
+        },
+        "misc": {
+            "globs": ["drivers/misc/**/*.c", "drivers/**/*.c"],
+            "helpers": ["misc_register", "struct miscdevice"],
+        },
+    }
+    return profiles.get(subsystem.strip().lower())
 
 
 def _strip_html(html: str) -> str:
@@ -375,6 +547,159 @@ def fetch_upstream_kernel_file(
 
 
 @mcp.tool()
+def inspect_kernel_capabilities(root: str | None = None) -> dict[str, Any]:
+    """Inspect local kernel version and driver-facing API capabilities.
+
+    This tool reads the selected local kernel tree and reports version metadata,
+    common helper availability, and callback signatures that affect generated
+    driver code.
+    """
+
+    search_root = _require_kernel_root(root)
+    if search_root is None:
+        return _missing_kernel_root_error()
+    if not search_root.exists():
+        return {"error": f"Local kernel tree not found: {search_root}"}
+
+    callback_signatures = {
+        "platform_driver.remove": _struct_callback_signature(search_root, "platform_driver", "remove"),
+        "i2c_driver.remove": _struct_callback_signature(search_root, "i2c_driver", "remove"),
+        "spi_driver.remove": _struct_callback_signature(search_root, "spi_driver", "remove"),
+        "spi_driver.probe": _struct_callback_signature(search_root, "spi_driver", "probe"),
+    }
+    helper_names = [
+        "devm_platform_ioremap_resource",
+        "devm_platform_get_and_ioremap_resource",
+        "devm_request_threaded_irq",
+        "devm_clk_get_enabled",
+        "devm_reset_control_get_optional_exclusive",
+        "devm_regulator_get_enable",
+        "devm_gpiod_get",
+        "gpiod_set_value_cansleep",
+        "devm_ioremap_resource",
+        "module_platform_driver",
+        "module_i2c_driver",
+        "module_spi_driver",
+        "of_match_ptr",
+    ]
+
+    config_files = {
+        "generated_autoconf": (search_root / "include" / "generated" / "autoconf.h").exists(),
+        "legacy_autoconf": (search_root / "include" / "linux" / "autoconf.h").exists(),
+        "kernel_release": (search_root / "include" / "config" / "kernel.release").exists(),
+    }
+
+    return {
+        "root": str(search_root),
+        "kernel_version": _read_kernel_makefile_version(search_root),
+        "config_files": config_files,
+        "helpers": {name: _api_presence(search_root, name) for name in helper_names},
+        "callback_signatures": callback_signatures,
+        "notes": [
+            "Use callback_signatures to decide probe/remove prototypes before generating code.",
+            "Use helpers availability to avoid emitting APIs missing from older BSP kernels.",
+        ],
+    }
+
+
+@mcp.tool()
+def find_driver_examples(
+    subsystem: str,
+    keywords: list[str] | None = None,
+    root: str | None = None,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Find similar in-tree driver examples for a subsystem and keyword set.
+
+    Args:
+        subsystem: Driver family such as platform, i2c, spi, gpio, pwm, input,
+            leds, watchdog, iio, or misc.
+        keywords: Optional terms to prefer, for example vendor names, compatible
+            fragments, IP block names, or helper APIs.
+        root: Optional one-call kernel root override.
+        limit: Maximum number of examples to return.
+
+    Returns:
+        Ranked local source files with matched helpers, keywords, and useful
+        nearby lines for reading before writing a new driver.
+    """
+
+    search_root = _require_kernel_root(root)
+    if search_root is None:
+        return _missing_kernel_root_error()
+    if not search_root.exists():
+        return {"error": f"Local kernel tree not found: {search_root}"}
+
+    profile = _driver_example_search_profile(subsystem)
+    if profile is None:
+        return {
+            "error": f"Unsupported driver subsystem: {subsystem}",
+            "supported_subsystems": ["platform", "i2c", "spi", "gpio", "pwm", "input", "leds", "watchdog", "iio", "misc"],
+        }
+
+    normalized_keywords = [kw.strip() for kw in (keywords or []) if kw.strip()]
+    candidate_files: set[Path] = set()
+    for glob in profile["globs"]:
+        candidate_files.update(_rg_file_list(profile["helpers"], search_root, glob=glob, limit=300))
+        if normalized_keywords:
+            candidate_files.update(_rg_file_list(normalized_keywords, search_root, glob=glob, limit=300))
+
+    examples: list[dict[str, Any]] = []
+    for path in candidate_files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        matched_helpers = [helper for helper in profile["helpers"] if re.search(re.escape(helper), text)]
+        matched_keywords = [kw for kw in normalized_keywords if re.search(re.escape(kw), text, re.IGNORECASE)]
+        if not matched_helpers and not matched_keywords:
+            continue
+
+        score = (len(matched_helpers) * 10) + (len(matched_keywords) * 6)
+        try:
+            relative = path.relative_to(search_root)
+        except ValueError:
+            relative = path
+        rel_text = str(relative)
+        if rel_text.startswith(f"drivers/{subsystem}/"):
+            score += 5
+        if "imx" in rel_text.lower() or "fsl" in rel_text.lower() or "freescale" in text.lower():
+            score += 3
+
+        lines = text.splitlines()
+        useful_lines: list[dict[str, Any]] = []
+        markers = matched_helpers + matched_keywords
+        for idx, line in enumerate(lines, start=1):
+            if any(re.search(re.escape(marker), line, re.IGNORECASE) for marker in markers):
+                useful_lines.append({"line": idx, "text": line.strip()})
+            if len(useful_lines) >= 8:
+                break
+
+        examples.append(
+            {
+                "file": rel_text,
+                "score": score,
+                "matched_helpers": matched_helpers,
+                "matched_keywords": matched_keywords,
+                "useful_lines": useful_lines,
+            }
+        )
+
+    examples.sort(key=lambda item: (-item["score"], item["file"]))
+    max_examples = max(1, limit)
+    return {
+        "root": str(search_root),
+        "subsystem": subsystem.strip().lower(),
+        "keywords": normalized_keywords,
+        "count": min(len(examples), max_examples),
+        "examples": examples[:max_examples],
+        "notes": [
+            "Read the highest-scoring examples before generating a new driver.",
+            "Prefer examples from the same target BSP over latest upstream style when APIs differ.",
+        ],
+    }
+
+@mcp.tool()
 def plan_kernel_implementation(task: str, interfaces: list[str] | None = None) -> dict[str, Any]:
     """Return a checklist for implementing a kernel-facing task.
 
@@ -395,7 +720,6 @@ def plan_kernel_implementation(task: str, interfaces: list[str] | None = None) -
     ]
     return {"task": task, "interfaces": interfaces, "implementation_plan": steps}
 
-
 @mcp.tool()
 def list_driver_template_blueprints_tool() -> dict[str, Any]:
     """List supported Linux driver subsystem blueprints.
@@ -410,7 +734,6 @@ def list_driver_template_blueprints_tool() -> dict[str, Any]:
         "count": len(blueprints),
         "blueprints": [_serialize_blueprint(blueprint) for blueprint in blueprints],
     }
-
 
 @mcp.tool()
 def get_driver_template_blueprint_tool(subsystem: str) -> dict[str, Any]:

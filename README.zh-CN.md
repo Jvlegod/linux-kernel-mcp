@@ -101,6 +101,8 @@ search_local_kernel_api("platform_driver_register", root="/path/to/other/linux")
 - `search_local_kernel_code`
 - `read_local_kernel_file`
 - `search_local_kernel_api`
+- `inspect_kernel_capabilities`
+- `find_driver_examples`
 
 驱动规划工具：
 
@@ -113,8 +115,9 @@ search_local_kernel_api("platform_driver_register", root="/path/to/other/linux")
 1. 先查最新官方文档，确认 API 和子系统语义。
 2. 需要时抓取主线源码片段，对比最新实现方式。
 3. 只有需要检查本机源码时，再设置本地 Linux 源码树。
-4. 有本地源码树后，搜索本地 API 调用点和附近实现。
-5. 让 Codex 规划实现步骤，并指出版本相关检查项。
+4. 有本地源码树后，先检查本地内核 API 能力和回调签名。
+5. 搜索附近的驱动样例和 API 调用点。
+6. 让 Codex 规划实现步骤，并指出版本相关检查项。
 
 ## Codex 配置
 
