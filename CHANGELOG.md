@@ -7,6 +7,12 @@ and this project follows semantic versioning where practical.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-22
+
+### Changed
+
+- Removed the custom release workflow version format restriction so package builds decide whether a requested version is valid.
+
 ## [0.1.2] - 2026-06-22
 
 ### Added
