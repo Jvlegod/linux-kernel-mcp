@@ -7,6 +7,8 @@ and this project follows semantic versioning where practical.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-22
+
 ### Added
 
 - Added release workflow validation and automatic version tagging for manually triggered package releases.
